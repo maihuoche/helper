@@ -6,12 +6,35 @@ class Router {
     private $defaultApp = 'app';
     private $allowedApps = ['app'];
     private $controllerBasePath;
+    private $cacheRules = [];
 
     public function __construct() {
         // 设置控制器基础路径，假设在项目根目录下
         $this->controllerBasePath = dirname(__DIR__);
+
+        // 设置默认缓存规则
+        $this->cacheRules = [
+            'app' => [
+                'max-age' => 86400,  // 1天
+                'public' => true
+            ],
+            'admin' => [
+                'no-store' => true,  // 禁止缓存
+                'private' => true
+            ]
+        ];
     }
 
+    /**
+     * 设置应用的缓存规则
+     * @param string $appName 应用名称
+     * @param array $rules 缓存规则
+     */
+    public function setCacheRules(string $appName, array $rules): void {
+        $this->cacheRules[strtolower($appName)] = $rules;
+    }
+
+    
     /**
      * 添加允许的应用
      * @param string $appName 应用名称
@@ -39,6 +62,29 @@ class Router {
         if (isset($parts[0]) && in_array(strtolower($parts[0]), $this->allowedApps)) {
             $app = strtolower($parts[0]);
             $start = 1;
+        }
+
+        // 设置缓存控制头
+        if (isset($this->cacheRules[$app])) {
+            $cacheRules = $this->cacheRules[$app];
+            $cacheControl = [];
+
+            if (isset($cacheRules['max-age'])) {
+                $cacheControl[] = "max-age=" . $cacheRules['max-age'];
+            }
+            if (!empty($cacheRules['public'])) {
+                $cacheControl[] = "public";
+            }
+            if (!empty($cacheRules['private'])) {
+                $cacheControl[] = "private";
+            }
+            if (!empty($cacheRules['no-store'])) {
+                $cacheControl[] = "no-store";
+            }
+
+            if (!empty($cacheControl)) {
+                header('Cache-Control: ' . implode(', ', $cacheControl));
+            }
         }
 
         // 获取控制器名称
