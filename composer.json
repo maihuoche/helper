@@ -1,0 +1,21 @@
+{
+    "name": "maihuoche/helper",
+    "type": "library",
+    "description": "custom helper tools",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "maihuoche",
+            "email": "151633024+maihuoche@users.noreply.github.com"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Maihuoche\\Helper\\": "src/"
+        }
+    },
+    "require": {
+        "php": ">8.3",
+        "ext-pdo": "*"
+    }
+}
