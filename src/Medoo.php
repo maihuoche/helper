@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Medoo;
+namespace Maihuoche;
 
 use PDO;
 use Exception;

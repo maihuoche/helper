@@ -1,6 +1,6 @@
 <?php
 
-namespace maihuoche;
+namespace Maihuoche;
 
 use Redis;
 use RedisException;

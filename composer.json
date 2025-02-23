@@ -11,10 +11,12 @@
     ],
     "autoload": {
         "psr-4": {
-            "Maihuoche\\Helper\\": "src/"
+            "Maihuoche\\": "src/"
         }
     },
     "require": {
-        "php": ">=8.0"
+        "php": ">=8.0",
+        "ext-redis": "*",
+        "ext-pdo": "*"
     }
 }
