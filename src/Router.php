@@ -10,7 +10,7 @@ class Router {
 
     public function __construct() {
         // 设置控制器基础路径，假设在项目根目录下
-        $this->controllerBasePath = dirname(__DIR__);
+        $this->controllerBasePath = $controllerBasePath ?: dirname(__DIR__);
 
         // 设置默认缓存规则
         $this->cacheRules = [
@@ -25,6 +25,14 @@ class Router {
         ];
     }
 
+    /**
+     * 设置控制器基础路径
+     * @param string $path
+     */
+    public function setControllerBasePath(string $path): void {
+        $this->controllerBasePath = $path;
+    }
+    
     /**
      * 设置应用的缓存规则
      * @param string $appName 应用名称
