@@ -59,7 +59,7 @@ class Response {
         $app = $parts[0];  // 应用名
 
         // 构建视图文件的完整路径
-        return dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR .
+        return dirname(__DIR__, 4) . DIRECTORY_SEPARATOR .
             $app . DIRECTORY_SEPARATOR .
             'views' . DIRECTORY_SEPARATOR .
             ltrim($view, '/');
