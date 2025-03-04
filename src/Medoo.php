@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Maihuoche;
@@ -32,10 +33,6 @@ class Medoo {
     public $error = null;
     public $errorInfo = null;
 
-    protected const TABLE_PATTERN = "[\p{L}_][\p{L}\p{N}@$#\-_]*";
-    protected const COLUMN_PATTERN = "[\p{L}_][\p{L}\p{N}@$#\-_\.]*";
-    protected const ALIAS_PATTERN = "[\p{L}_][\p{L}\p{N}@$#\-_]*";
-
     public function __construct(array $options) {
         if (isset($options['prefix'])) {
             $this->prefix = $options['prefix'];
@@ -44,22 +41,6 @@ class Medoo {
         if (isset($options['testMode']) && $options['testMode'] == true) {
             $this->testMode = true;
             return;
-        }
-
-        $options['type'] = $options['type'] ?? $options['database_type'];
-
-        if (!isset($options['pdo'])) {
-            $options['database'] = $options['database'] ?? $options['database_name'];
-            if (!isset($options['socket'])) {
-                $options['host'] = $options['host'] ?? $options['server'] ?? false;
-            }
-        }
-
-        if (isset($options['type'])) {
-            $this->type = strtolower($options['type']);
-            if ($this->type === 'mariadb') {
-                $this->type = 'mysql';
-            }
         }
 
         if (isset($options['logging']) && is_bool($options['logging'])) {
@@ -82,13 +63,13 @@ class Medoo {
 
         $attr = [
             'driver' => 'mysql',
-            'dbname' => $options['database']
+            'dbname' => $options['database'] ?? $options['database_name']
         ];
 
         if (isset($options['socket'])) {
             $attr['unix_socket'] = $options['socket'];
         } else {
-            $attr['host'] = $options['host'];
+            $attr['host'] = $options['host'] ?? $options['server'] ?? false;
             if (isset($options['port']) && is_int($options['port'] * 1)) {
                 $attr['port'] = $options['port'];
             }
@@ -151,7 +132,7 @@ class Medoo {
         return $this->exec($statement, $map);
     }
 
-    public function exec(string $statement, array $map = [], ?callable $callback = null): ?PDOStatement {
+    public function exec(string $statement, array $map = [], callable $callback = null): ?PDOStatement {
         $this->statement = null;
         $this->errorInfo = null;
         $this->error = null;
@@ -214,6 +195,122 @@ class Medoo {
         return $statement;
     }
 
+    protected function selectContext(
+        string $table,
+        array &$map,
+        $join,
+        &$columns = null,
+        $where = null
+    ): string {
+        preg_match('/(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\)/u', $table, $tableMatch);
+    
+        if (isset($tableMatch['table'], $tableMatch['alias'])) {
+            $table = $this->tableQuote($tableMatch['table']);
+            $tableAlias = $this->tableQuote($tableMatch['alias']);
+            $tableQuery = "{$table} AS {$tableAlias}";
+        } else {
+            $table = $this->tableQuote($table);
+            $tableQuery = $table;
+        }
+    
+        $isJoin = $this->isJoin($join);
+    
+        if ($isJoin) {
+            $tableQuery .= ' ' . $this->buildJoin($tableAlias ?? $table, $join, $map);
+        } else {
+            if (is_null($columns)) {
+                if (!is_null($where) || (is_array($join))) {
+                    $where = $join;
+                    $columns = null;
+                } else {
+                    $where = null;
+                    $columns = $join;
+                }
+            } else {
+                $where = $columns;
+                $columns = $join;
+            }
+        }
+    
+        if (isset($columns)) {
+            if ($isJoin && is_null($columns)) {
+                $columns = '*';
+            }
+            $column = $this->columnPush($columns, $map, true, $isJoin);
+        } else {
+            $column = '*';
+        }
+    
+        return 'SELECT ' . $column . ' FROM ' . $tableQuery . $this->whereClause($where, $map);
+    }
+    
+    protected function isJoin($join): bool {
+        if (!is_array($join)) {
+            return false;
+        }
+    
+        $keys = array_keys($join);
+        if (isset($keys[0]) && is_string($keys[0]) && strpos($keys[0], '[') === 0) {
+            return true;
+        }
+    
+        return false;
+    }
+    
+    protected function buildJoin(string $table, array $join, array &$map): string {
+        $tableJoin = [];
+        $type = [
+            '>' => 'LEFT',
+            '<' => 'RIGHT',
+            '<>' => 'FULL',
+            '><' => 'INNER'
+        ];
+    
+        foreach ($join as $subtable => $relation) {
+            preg_match('/(\[(?<join>\<\>?|\>\<?)\])?(?<table>[\p{L}_][\p{L}\p{N}@$#\-_]*)\s?(\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?/u', $subtable, $match);
+    
+            if ($match['join'] === '' || $match['table'] === '') {
+                continue;
+            }
+    
+            if (is_string($relation)) {
+                $relation = 'USING ("' . $relation . '")';
+            } elseif (is_array($relation)) {
+                if (isset($relation[0])) {
+                    $relation = 'USING ("' . implode('", "', $relation) . '")';
+                } else {
+                    $joins = [];
+    
+                    foreach ($relation as $key => $value) {
+                        if ($key === 'AND' && is_array($value)) {
+                            $joins[] = $this->dataImplode($value, $map, ' AND');
+                            continue;
+                        }
+    
+                        $joins[] = (
+                            strpos($key, '.') > 0 ?
+                                $this->columnQuote($key) :
+                                $table . '.' . $this->columnQuote($key)
+                        ) .
+                        ' = ' .
+                        $this->tableQuote($match['alias'] ?? $match['table']) . '.' . $this->columnQuote($value);
+                    }
+    
+                    $relation = 'ON ' . implode(' AND ', $joins);
+                }
+            }
+    
+            $tableName = $this->tableQuote($match['table']);
+            if (isset($match['alias'])) {
+                $tableName .= ' AS ' . $this->tableQuote($match['alias']);
+            }
+    
+            $tableJoin[] = $type[$match['join']] . " JOIN {$tableName} {$relation}";
+        }
+    
+        return implode(' ', $tableJoin);
+    }
+    
     protected function generate(string $statement, array $map): string {
         $statement = preg_replace(
             '/(?!\'[^\s]+\s?)"([\p{L}_][\p{L}\p{N}@$#\-_]*)"(?!\s?[^\s]+\')/u',
@@ -223,7 +320,7 @@ class Medoo {
 
         foreach ($map as $key => $value) {
             if ($value[1] === PDO::PARAM_STR) {
-                $replace = "'" . preg_replace(['/([\'"])/', '/(\\\\\\\")/'], ["\\\\\${1}", '\\\${1}'], $value[0]) . "'";
+                $replace = $this->quote("{$value[0]}");
             } elseif ($value[1] === PDO::PARAM_NULL) {
                 $replace = 'NULL';
             } elseif ($value[1] === PDO::PARAM_LOB) {
@@ -233,7 +330,6 @@ class Medoo {
             }
             $statement = str_replace($key, $replace, $statement);
         }
-
         return $statement;
     }
 
@@ -254,15 +350,15 @@ class Medoo {
         }
 
         $query = preg_replace_callback(
-            '/(([`\'])[\<]*?)?((FROM|TABLE|TABLES LIKE|INTO|UPDATE|JOIN|TABLE IF EXISTS)\s*)?\<((' . $this::TABLE_PATTERN . ')(\.' . $this::COLUMN_PATTERN . ')?)\>([^,]*?\2)?/',
+            '/(([`\'])[\<]*?)?((FROM|TABLE|INTO|UPDATE|JOIN|TABLE IF EXISTS)\s*)?\<(([\p{L}_][\p{L}\p{N}@$#\-_]*)(\.[\p{L}_][\p{L}\p{N}@$#\-_]*)?)\>([^,]*?\2)?/',
             function ($matches) {
                 if (!empty($matches[2]) && isset($matches[8])) {
                     return $matches[0];
                 }
                 if (!empty($matches[4])) {
-                    return $matches[1] . $matches[4] . ' "' . $this->prefix . $matches[5] . '"';
+                    return $matches[1] . $matches[4] . ' ' . $this->tableQuote($matches[5]);
                 }
-                return $matches[1] . '"' . $matches[5] . '"';
+                return $matches[1] . $this->columnQuote($matches[5]);
             },
             $raw->value
         );
@@ -273,8 +369,27 @@ class Medoo {
                 $map[$key] = $this->typeMap($value, gettype($value));
             }
         }
-
         return $query;
+    }
+
+    public function quote(string $string): string {
+        return "'" . preg_replace('/\'/', '\'\'', $string) . "'";
+    }
+
+    public function tableQuote(string $table): string {
+        if (preg_match('/^[\p{L}_][\p{L}\p{N}@$#\-_]*$/u', $table)) {
+            return '"' . $this->prefix . $table . '"';
+        }
+        throw new InvalidArgumentException("Incorrect table name: {$table}.");
+    }
+
+    public function columnQuote(string $column): string {
+        if (preg_match('/^[\p{L}_][\p{L}\p{N}@$#\-_]*(\.?[\p{L}_][\p{L}\p{N}@$#\-_]*)?$/u', $column)) {
+            return strpos($column, '.') !== false ?
+                '"' . $this->prefix . str_replace('.', '"."', $column) . '"' :
+                '"' . $column . '"';
+        }
+        throw new InvalidArgumentException("Incorrect column name: {$column}.");
     }
 
     protected function typeMap($value, string $type): array {
@@ -297,25 +412,237 @@ class Medoo {
         return [$value, $map[$type]];
     }
 
-    public function action(callable $actions): void {
-        if (is_callable($actions)) {
-            $this->pdo->beginTransaction();
-            try {
-                $result = $actions($this);
-                if ($result === false) {
-                    $this->pdo->rollBack();
-                } else {
-                    $this->pdo->commit();
+    protected function columnPush(&$columns, array &$map, bool $root, bool $isJoin = false): string {
+        if ($columns === '*') {
+            return $columns;
+        }
+
+        $stack = [];
+        $hasDistinct = false;
+
+        if (is_string($columns)) {
+            $columns = [$columns];
+        }
+
+        foreach ($columns as $key => $value) {
+            $isIntKey = is_int($key);
+            $isArrayValue = is_array($value);
+
+            if (!$isIntKey && $isArrayValue && $root && count(array_keys($columns)) === 1) {
+                $stack[] = $this->columnQuote($key);
+                $stack[] = $this->columnPush($value, $map, false, $isJoin);
+            } elseif ($isArrayValue) {
+                $stack[] = $this->columnPush($value, $map, false, $isJoin);
+            } elseif (!$isIntKey && $raw = $this->buildRaw($value, $map)) {
+                preg_match('/(?<column>[\p{L}_][\p{L}\p{N}@$#\-_\.]*)(\s*\[(?<type>(String|Bool|Int|Number))\])?/u', $key, $match);
+                $stack[] = "{$raw} AS {$this->columnQuote($match['column'])}";
+            } elseif ($isIntKey && is_string($value)) {
+                if ($isJoin && strpos($value, '*') !== false) {
+                    throw new InvalidArgumentException('Cannot use table.* to select all columns while joining table.');
                 }
-            } catch (Exception $e) {
-                $this->pdo->rollBack();
-                throw $e;
+
+                preg_match('/(?<column>[\p{L}_][\p{L}\p{N}@$#\-_\.]*)(?:\s*\((?<alias>[\p{L}_][\p{L}\p{N}@$#\-_]*)\))?(?:\s*\[(?<type>(?:String|Bool|Int|Number))\])?/u', $value, $match);
+
+                if (!empty($match['alias'])) {
+                    $stack[] = "{$this->columnQuote($match['column'])} AS {$this->columnQuote($match['alias'])}";
+                } else {
+                    $stack[] = $this->columnQuote($match['column']);
+                }
             }
         }
+
+        return implode(',', $stack);
     }
 
-    public function id(?string $name = null): ?string {
-        return $this->pdo->lastInsertId($name);
+    protected function dataImplode(array $data, array &$map, string $conjunctor): string {
+        $stack = [];
+
+        foreach ($data as $key => $value) {
+            $type = gettype($value);
+
+            if ($type === 'array' && preg_match("/^(AND|OR)(\s+#.*)?$/", $key, $relationMatch)) {
+                $stack[] = '(' . $this->dataImplode($value, $map, ' ' . $relationMatch[1]) . ')';
+                continue;
+            }
+
+            $mapKey = $this->mapKey();
+            $isIndex = is_int($key);
+
+            if ($isIndex && isset($value[4]) && in_array($value[1], ['>', '>=', '<', '<=', '=', '!='])) {
+                $stack[] = "{$this->columnQuote($value[0])} {$value[1]} " . $this->columnQuote($value[4]);
+                continue;
+            }
+
+            if ($value === null) {
+                $stack[] = $this->columnQuote($key) . ' IS NULL';
+                continue;
+            }
+
+            if (is_array($value)) {
+                $values = [];
+                foreach ($value as $item) {
+                    $values[] = $mapKey . '_' . count($values);
+                    $map[$mapKey . '_' . count($values) - 1] = $this->typeMap($item, gettype($item));
+                }
+                $stack[] = $this->columnQuote($key) . ' IN (' . implode(', ', $values) . ')';
+                continue;
+            }
+
+            $stack[] = "{$this->columnQuote($key)} = {$mapKey}";
+            $map[$mapKey] = $this->typeMap($value, $type);
+        }
+
+        return implode($conjunctor . ' ', $stack);
+    }
+
+    protected function whereClause($where, array &$map): string {
+        $clause = '';
+
+        if (is_array($where)) {
+            $conditions = array_diff_key($where, array_flip(['GROUP', 'ORDER', 'HAVING', 'LIMIT', 'LIKE', 'MATCH']));
+
+            if (!empty($conditions)) {
+                $clause = ' WHERE ' . $this->dataImplode($conditions, $map, ' AND');
+            }
+
+            if (isset($where['GROUP'])) {
+                $clause .= ' GROUP BY ' . $this->columnQuote($where['GROUP']);
+            }
+
+            if (isset($where['ORDER'])) {
+                $clause .= ' ORDER BY ';
+                if (is_array($where['ORDER'])) {
+                    $stack = [];
+                    foreach ($where['ORDER'] as $column => $value) {
+                        if ($value === 'ASC' || $value === 'DESC') {
+                            $stack[] = $this->columnQuote($column) . ' ' . $value;
+                        } else {
+                            $stack[] = $this->columnQuote($value);
+                        }
+                    }
+                    $clause .= implode(',', $stack);
+                } else {
+                    $clause .= $this->columnQuote($where['ORDER']);
+                }
+            }
+
+            if (isset($where['LIMIT'])) {
+                if (is_numeric($where['LIMIT'])) {
+                    $clause .= ' LIMIT ' . $where['LIMIT'];
+                } else if (
+                    is_array($where['LIMIT']) && 
+                    is_numeric($where['LIMIT'][0]) && 
+                    is_numeric($where['LIMIT'][1])
+                ) {
+                    $clause .= " LIMIT {$where['LIMIT'][1]} OFFSET {$where['LIMIT'][0]}";
+                }
+            }
+        }
+
+        return $clause;
+    }
+
+    public function select(string $table, $join, $columns = null, $where = null): ?array {
+        $map = [];
+        $result = [];
+        $columnMap = [];
+
+        $args = func_get_args();
+        $lastArgs = $args[array_key_last($args)];
+        $callback = is_callable($lastArgs) ? $lastArgs : null;
+
+        $where = is_callable($where) ? null : $where;
+        $columns = is_callable($columns) ? null : $columns;
+
+        $column = $where === null ? $join : $columns;
+        $isSingle = (is_string($column) && $column !== '*');
+
+        $statement = $this->exec($this->selectContext($table, $map, $join, $columns, $where), $map);
+
+        if (!$statement) {
+            return null;
+        }
+
+        return $statement->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function insert(string $table, array $values): ?PDOStatement {
+        $stack = [];
+        $columns = [];
+        $fields = [];
+        $map = [];
+
+        if (!isset($values[0])) {
+            $values = [$values];
+        }
+
+        foreach ($values as $data) {
+            foreach ($data as $key => $value) {
+                $columns[] = $key;
+            }
+        }
+
+        $columns = array_unique($columns);
+
+        foreach ($values as $data) {
+            $values = [];
+
+            foreach ($columns as $key) {
+                if (!isset($data[$key])) {
+                    $values[] = 'NULL';
+                    continue;
+                }
+
+                $value = $data[$key];
+                $type = gettype($value);
+
+                if ($raw = $this->buildRaw($value, $map)) {
+                    $values[] = $raw;
+                    continue;
+                }
+
+                $mapKey = $this->mapKey();
+                $values[] = $mapKey;
+                $map[$mapKey] = $this->typeMap($value, $type);
+            }
+
+            $stack[] = '(' . implode(', ', $values) . ')';
+        }
+
+        foreach ($columns as $key) {
+            $fields[] = $this->columnQuote($key);
+        }
+
+        return $this->exec('INSERT INTO ' . $this->tableQuote($table) . ' (' . implode(', ', $fields) . ') VALUES ' . implode(', ', $stack), $map);
+    }
+
+    public function update(string $table, array $data, $where = null): ?PDOStatement {
+        $fields = [];
+        $map = [];
+
+        foreach ($data as $key => $value) {
+            $column = $this->columnQuote($key);
+            
+            if ($raw = $this->buildRaw($value, $map)) {
+                $fields[] = "{$column} = {$raw}";
+                continue;
+            }
+
+            $mapKey = $this->mapKey();
+            $fields[] = "{$column} = {$mapKey}";
+            $map[$mapKey] = $this->typeMap($value, gettype($value));
+        }
+
+        return $this->exec('UPDATE ' . $this->tableQuote($table) . ' SET ' . implode(', ', $fields) . $this->whereClause($where, $map), $map);
+    }
+
+    public function delete(string $table, $where): ?PDOStatement {
+        $map = [];
+        return $this->exec('DELETE FROM ' . $this->tableQuote($table) . $this->whereClause($where, $map), $map);
+    }
+
+    public function id(): ?string {
+        return $this->pdo->lastInsertId();
     }
 
     public function debug(): self {
@@ -323,52 +650,7 @@ class Medoo {
         return $this;
     }
 
-    public function beginDebug(): void {
-        $this->debugMode = true;
-        $this->debugLogging = true;
-    }
-
-    public function debugLog(): array {
-        $this->debugMode = false;
-        $this->debugLogging = false;
-        return $this->debugLogs;
-    }
-
-    public function last(): ?string {
-        if (empty($this->logs)) {
-            return null;
-        }
-        $log = $this->logs[array_key_last($this->logs)];
-        return $this->generate($log[0], $log[1]);
-    }
-
-    public function log(): array {
-        return array_map(
-            function ($log) {
-                return $this->generate($log[0], $log[1]);
-            },
-            $this->logs
-        );
-    }
-
-    public function info(): array {
-        $output = [
-            'server' => 'SERVER_INFO',
-            'driver' => 'DRIVER_NAME',
-            'client' => 'CLIENT_VERSION',
-            'version' => 'SERVER_VERSION',
-            'connection' => 'CONNECTION_STATUS'
-        ];
-
-        foreach ($output as $key => $value) {
-            try {
-                $output[$key] = $this->pdo->getAttribute(constant('PDO::ATTR_' . $value));
-            } catch (PDOException $e) {
-                $output[$key] = $e->getMessage();
-            }
-        }
-
-        $output['dsn'] = $this->dsn;
-        return $output;
+    public function error(): ?string {
+        return $this->error;
     }
 }
